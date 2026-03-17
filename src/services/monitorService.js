@@ -18,6 +18,7 @@ class MonitorService {
   constructor(config) {
     this.config = config;
     this.serverStates = new Map();
+    this.watchdogTimer = null;
   }
 
   async start() {
@@ -32,6 +33,7 @@ class MonitorService {
         recoveryStartedAt: null,
         currentIncidentId: null,
         lastCheckAt: null,
+        lastCheckStartedAt: null,
         lastHealthyAt: null,
         lastError: null,
         inRetryMode: false,
@@ -39,11 +41,19 @@ class MonitorService {
         running: false,
       });
 
+      console.log(`[monitor] initialized server=${server.name} url=${server.url}`);
       this.scheduleNextCheck(server.name, 0);
     }
+
+    this.startWatchdog();
   }
 
   stop() {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+
     for (const state of this.serverStates.values()) {
       if (state.timer) {
         clearTimeout(state.timer);
@@ -63,6 +73,7 @@ class MonitorService {
         consecutiveSuccesses: state.consecutiveSuccesses,
         firstFailureAt: state.firstFailureAt ? state.firstFailureAt.toISOString() : null,
         recoveryStartedAt: state.recoveryStartedAt ? state.recoveryStartedAt.toISOString() : null,
+        lastCheckStartedAt: state.lastCheckStartedAt ? state.lastCheckStartedAt.toISOString() : null,
         lastCheckAt: state.lastCheckAt ? state.lastCheckAt.toISOString() : null,
         lastHealthyAt: state.lastHealthyAt ? state.lastHealthyAt.toISOString() : null,
         lastError: state.lastError,
@@ -80,6 +91,10 @@ class MonitorService {
       clearTimeout(state.timer);
     }
 
+    console.log(
+      `[poll] next server=${serverName} delayMs=${delayMs} mode=${state.inRetryMode ? "retry" : "normal"}`
+    );
+
     state.timer = setTimeout(() => {
       this.runCheck(serverName).catch((error) => {
         console.error(`Monitor error for ${serverName}:`, error);
@@ -93,13 +108,23 @@ class MonitorService {
 
   async runCheck(serverName) {
     const state = this.serverStates.get(serverName);
-    if (!state || state.running) {
+    if (!state) {
+      console.error(`[poll] skipped server=${serverName} reason=missing_state`);
+      return;
+    }
+
+    if (state.running) {
+      console.error(`[poll] skipped server=${serverName} reason=already_running`);
       return;
     }
 
     state.running = true;
+    state.lastCheckStartedAt = new Date();
 
     try {
+      console.log(
+        `[poll] server=${state.server.name} url=${state.server.url} mode=${state.inRetryMode ? "retry" : "normal"}`
+      );
       const result = await this.fetchHealth(state.server);
       const healthCheck = await HealthCheck.create({
         serverName: state.server.name,
@@ -113,12 +138,18 @@ class MonitorService {
       });
 
       state.lastCheckAt = result.checkedAt;
+      console.log(
+        `[poll] result server=${state.server.name} healthy=${result.isHealthy} status=${result.httpStatus ?? "null"} responseMs=${result.responseTimeMs} checkedAt=${result.checkedAt.toISOString()}${result.failureReason ? ` reason="${result.failureReason}"` : ""}`
+      );
 
       if (result.isHealthy) {
         await this.handleSuccess(state, healthCheck);
       } else {
         await this.handleFailure(state, healthCheck);
       }
+    } catch (error) {
+      console.error(`[poll] failed server=${serverName} error="${error.message}"`);
+      throw error;
     } finally {
       state.running = false;
       const nextDelay = state.inRetryMode
@@ -126,6 +157,40 @@ class MonitorService {
         : this.config.normalPollIntervalMs;
       this.scheduleNextCheck(serverName, nextDelay);
     }
+  }
+
+  startWatchdog() {
+    const baselineInterval = Math.max(this.config.normalPollIntervalMs, this.config.downRetryIntervalMs);
+    const watchdogIntervalMs = Math.max(30000, baselineInterval);
+    const staleThresholdMs = Math.max(90000, baselineInterval * 3);
+
+    console.log(
+      `[monitor] watchdog started intervalMs=${watchdogIntervalMs} staleThresholdMs=${staleThresholdMs}`
+    );
+
+    this.watchdogTimer = setInterval(() => {
+      const now = Date.now();
+
+      for (const state of this.serverStates.values()) {
+        const lastActivityAt = state.lastCheckAt || state.lastCheckStartedAt;
+
+        if (!lastActivityAt) {
+          console.error(`[watchdog] server=${state.server.name} status=no_poll_yet`);
+          continue;
+        }
+
+        const ageMs = now - lastActivityAt.getTime();
+        if (ageMs > staleThresholdMs) {
+          console.error(
+            `[watchdog] server=${state.server.name} status=stale lastActivityAt=${lastActivityAt.toISOString()} ageMs=${ageMs} running=${state.running}`
+          );
+        } else {
+          console.log(
+            `[watchdog] server=${state.server.name} status=ok lastActivityAt=${lastActivityAt.toISOString()} ageMs=${ageMs} running=${state.running}`
+          );
+        }
+      }
+    }, watchdogIntervalMs);
   }
 
   async fetchHealth(server) {
@@ -172,6 +237,10 @@ class MonitorService {
     state.lastError = healthCheck.failureReason;
     state.recoveryStartedAt = null;
 
+    console.log(
+      `[event] failure server=${state.server.name} consecutiveFailures=${state.consecutiveFailures} checkedAt=${healthCheck.checkedAt.toISOString()} reason="${healthCheck.failureReason}"`
+    );
+
     if (!state.firstFailureAt) {
       state.firstFailureAt = healthCheck.checkedAt;
       state.firstFailureCheckId = healthCheck._id;
@@ -192,6 +261,9 @@ class MonitorService {
       });
 
       state.currentIncidentId = incident._id;
+      console.log(
+        `[event] incident_opened server=${state.server.name} incidentId=${incident._id} startedAt=${incident.startedAt.toISOString()} detectedDownAt=${incident.detectedDownAt.toISOString()} failureCount=${state.consecutiveFailures}`
+      );
 
       await this.sendAlert(this.config.alertWebhookUrl, {
         eventType: "server_down",
@@ -211,12 +283,20 @@ class MonitorService {
     state.lastHealthyAt = healthCheck.checkedAt;
     state.lastError = null;
 
+    console.log(
+      `[event] success server=${state.server.name} checkedAt=${healthCheck.checkedAt.toISOString()} currentStatus=${state.currentStatus}`
+    );
+
     if (state.currentStatus === "down") {
       state.consecutiveSuccesses += 1;
 
       if (!state.recoveryStartedAt) {
         state.recoveryStartedAt = healthCheck.checkedAt;
       }
+
+      console.log(
+        `[event] recovery_progress server=${state.server.name} consecutiveSuccesses=${state.consecutiveSuccesses} recoveryStartedAt=${state.recoveryStartedAt.toISOString()}`
+      );
 
       if (state.consecutiveSuccesses >= this.config.upSuccessThreshold) {
         const incident = await Incident.findById(state.currentIncidentId);
@@ -227,6 +307,10 @@ class MonitorService {
           incident.endCheckId = healthCheck._id;
           incident.status = "resolved";
           incident.recoverySuccessCountAtDetection = state.consecutiveSuccesses;
+
+          console.log(
+            `[event] incident_resolved server=${state.server.name} incidentId=${incident._id} startedAt=${incident.startedAt.toISOString()} endedAt=${incident.endedAt.toISOString()} detectedUpAt=${incident.detectedUpAt.toISOString()}`
+          );
 
           await this.sendAlert(this.config.alertWebhookUrl, {
             eventType: "server_up",
@@ -268,7 +352,11 @@ class MonitorService {
 
   async sendAlert(url, payload) {
     try {
+      console.log(
+        `[event] alert_send type=${payload.eventType} server=${payload.serverName} webhookConfigured=${Boolean(url)}`
+      );
       await postJson(url, payload);
+      console.log(`[event] alert_result type=${payload.eventType} server=${payload.serverName} status=success`);
     } catch (error) {
       console.error(`Webhook delivery failed for ${payload.serverName}:`, error.message);
     }

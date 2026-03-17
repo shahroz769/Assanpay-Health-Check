@@ -6,12 +6,36 @@ const config = require("./config");
 const MonitorService = require("./services/monitorService");
 const { startReportScheduler, getNextReportBoundary } = require("./services/reportService");
 
+process.on("uncaughtException", (error) => {
+  console.error("[fatal] uncaughtException:", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[fatal] unhandledRejection:", reason);
+});
+
+mongoose.connection.on("connected", () => {
+  console.log("[mongodb] connected");
+});
+
+mongoose.connection.on("disconnected", () => {
+  console.error("[mongodb] disconnected");
+});
+
+mongoose.connection.on("error", (error) => {
+  console.error("[mongodb] error:", error);
+});
+
 async function start() {
   if (!config.mongoUri) {
     throw new Error("MONGODB_URI is required.");
   }
 
+  console.log(
+    `[startup] port=${config.port} servers=${config.servers.length} reportHoursUtc=${config.reportHoursUtc.join(",")}`
+  );
   await mongoose.connect(config.mongoUri);
+  console.log("[startup] mongodb connected");
 
   const monitorService = new MonitorService(config);
   await monitorService.start();
@@ -67,7 +91,9 @@ async function start() {
     console.log("Shutting down monitor service...");
     monitorService.stop();
     stopReportScheduler();
-    server.close();
+    server.close(() => {
+      console.log("[shutdown] http server closed");
+    });
     await mongoose.disconnect();
     process.exit(0);
   };

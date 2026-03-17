@@ -50,6 +50,9 @@ function computeDowntimeIntervals(incidents, windowStart, windowEnd) {
 }
 
 async function generateServerReport(server, windowStart, windowEnd, reportWebhookUrl) {
+  console.log(
+    `[report] start server=${server.name} windowStart=${windowStart.toISOString()} windowEnd=${windowEnd.toISOString()}`
+  );
   const incidents = await Incident.find({
     serverName: server.name,
     startedAt: { $lt: windowEnd },
@@ -62,6 +65,10 @@ async function generateServerReport(server, windowStart, windowEnd, reportWebhoo
   const uptimeSeconds = Math.max(0, windowSeconds - downtimeSeconds);
   const uptimePercent = Number(((uptimeSeconds / windowSeconds) * 100).toFixed(2));
   const downtimePercent = Number(((downtimeSeconds / windowSeconds) * 100).toFixed(2));
+
+  console.log(
+    `[report] summary server=${server.name} incidents=${incidents.length} downtimeIntervals=${downtimeIntervals.length} uptimeSeconds=${uptimeSeconds} downtimeSeconds=${downtimeSeconds} uptimePercent=${uptimePercent}`
+  );
 
   const payload = {
     eventType: "uptime_report",
@@ -106,19 +113,27 @@ async function generateServerReport(server, windowStart, windowEnd, reportWebhoo
   );
 
   try {
+    console.log(`[report] webhook_send server=${server.name} webhookConfigured=${Boolean(reportWebhookUrl)}`);
     const result = await postJson(reportWebhookUrl, payload);
     const success = result.skipped || (result.status >= 200 && result.status < 300);
 
     reportRun.webhookStatus = success ? "success" : "failed";
     reportRun.webhookDeliveredAt = success ? new Date() : null;
     reportRun.webhookError = result.skipped ? result.reason : null;
+    console.log(
+      `[report] webhook_result server=${server.name} status=${reportRun.webhookStatus}${result.skipped ? ` reason="${result.reason}"` : ""}`
+    );
   } catch (error) {
     reportRun.webhookStatus = "failed";
     reportRun.webhookDeliveredAt = null;
     reportRun.webhookError = error.message;
+    console.error(`[report] webhook_result server=${server.name} status=failed error="${error.message}"`);
   }
 
   await reportRun.save();
+  console.log(
+    `[report] saved server=${server.name} reportRunId=${reportRun._id} windowStart=${windowStart.toISOString()} windowEnd=${windowEnd.toISOString()}`
+  );
   return payload;
 }
 
@@ -128,9 +143,15 @@ function startReportScheduler({ servers, reportHoursUtc, reportWebhookUrl, onErr
   const scheduleNext = () => {
     const nextRun = getNextReportBoundary(reportHoursUtc);
     const delayMs = Math.max(1000, nextRun.getTime() - Date.now());
+    console.log(
+      `[report] next_run scheduledAt=${nextRun.toISOString()} delayMs=${delayMs} servers=${servers.length}`
+    );
 
     timer = setTimeout(async () => {
       const { start, end } = getPreviousWindow(nextRun);
+      console.log(
+        `[report] cycle_start windowStart=${start.toISOString()} windowEnd=${end.toISOString()}`
+      );
 
       try {
         for (const server of servers) {
