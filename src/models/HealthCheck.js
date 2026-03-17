@@ -4,7 +4,7 @@ const HealthCheckSchema = new mongoose.Schema(
   {
     serverName: { type: String, required: true, index: true },
     serverUrl: { type: String, required: true },
-    checkedAt: { type: Date, required: true, index: true },
+    checkedAt: { type: Date, required: true },
     httpStatus: { type: Number, default: null },
     isHealthy: { type: Boolean, required: true, index: true },
     responseTimeMs: { type: Number, default: null },

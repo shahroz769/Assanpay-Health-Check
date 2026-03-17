@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
 
 const express = require("express");
 const mongoose = require("mongoose");
@@ -87,19 +87,38 @@ async function start() {
     console.log(`Health monitor listening on port ${config.port}`);
   });
 
-  const shutdown = async () => {
-    console.log("Shutting down monitor service...");
+  let isShuttingDown = false;
+
+  const shutdown = async (signal = "unknown") => {
+    if (isShuttingDown) {
+      return;
+    }
+    isShuttingDown = true;
+
+    console.log(`[shutdown] signal=${signal} stopping monitor service`);
     monitorService.stop();
     stopReportScheduler();
-    server.close(() => {
-      console.log("[shutdown] http server closed");
+
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        console.log("[shutdown] http server closed");
+        resolve();
+      });
     });
+
     await mongoose.disconnect();
-    process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
 }
 
 start().catch((error) => {
