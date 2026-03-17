@@ -15,5 +15,6 @@ const HealthCheckSchema = new mongoose.Schema(
 );
 
 HealthCheckSchema.index({ serverName: 1, checkedAt: -1 });
+HealthCheckSchema.index({ checkedAt: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
 
 module.exports = mongoose.model("HealthCheck", HealthCheckSchema);
