@@ -141,6 +141,11 @@ class MonitorService {
       console.log(
         `[poll] result server=${state.server.name} healthy=${result.isHealthy} status=${result.httpStatus ?? "null"} responseMs=${result.responseTimeMs} checkedAt=${result.checkedAt.toISOString()}${result.failureReason ? ` reason="${result.failureReason}"` : ""}`
       );
+      if (result.payloadWarning) {
+        console.warn(
+          `[poll] payload_warning server=${state.server.name} checkedAt=${result.checkedAt.toISOString()} warning="${result.payloadWarning}"`
+        );
+      }
 
       if (result.isHealthy) {
         await this.handleSuccess(state, healthCheck);
@@ -204,7 +209,8 @@ class MonitorService {
       });
 
       const payload = response.data;
-      const isHealthy = response.status === 200 && isExpectedHealthyPayload(payload);
+      const payloadMatchesExpected = isExpectedHealthyPayload(payload);
+      const isHealthy = response.status === 200;
 
       return {
         checkedAt,
@@ -214,9 +220,8 @@ class MonitorService {
         responseTimeMs: Date.now() - startedAt,
         failureReason: isHealthy
           ? null
-          : response.status !== 200
-            ? `Unexpected HTTP status ${response.status}`
-            : "Unexpected response payload",
+          : `Unexpected HTTP status ${response.status}`,
+        payloadWarning: payloadMatchesExpected ? null : "Unexpected response payload",
       };
     } catch (error) {
       return {
