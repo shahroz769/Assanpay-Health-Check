@@ -27,6 +27,18 @@ async function start() {
 
   const app = express();
 
+  app.get("/", (req, res) => {
+    res.json({
+      success: true,
+      message: "Server is running",
+      data: {
+        ok: true,
+        timestamp: new Date().toISOString(),
+        mongoState: mongoose.connection.readyState,
+      },
+    });
+  });
+
   app.get("/health", (req, res) => {
     res.json({
       success: true,
