@@ -19,7 +19,7 @@ module.exports = {
   mongoUri: process.env.MONGODB_URI,
   reportWebhookUrl: process.env.REPORT_WEBHOOK_URL,
   alertWebhookUrl: process.env.ALERT_WEBHOOK_URL,
-  webhookAuthKey: process.env.WEBHOOK_AUTH_KEY,
+  webhookAuthKey: process.env.WEBHOOK_KEY,
   requestTimeoutMs: parseInteger(process.env.REQUEST_TIMEOUT_MS, 10000),
   normalPollIntervalMs: parseInteger(process.env.NORMAL_POLL_INTERVAL_MS, 30000),
   downRetryIntervalMs: parseInteger(process.env.DOWN_RETRY_INTERVAL_MS, 15000),
