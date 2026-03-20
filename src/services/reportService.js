@@ -49,6 +49,27 @@ function computeDowntimeIntervals(incidents, windowStart, windowEnd) {
   return intervals;
 }
 
+function buildReportPayload(reportLike) {
+  return {
+    eventType: "uptime_report",
+    serverName: reportLike.serverName,
+    serverUrl: reportLike.serverUrl,
+    windowStartUtc: reportLike.windowStartUtc.toISOString(),
+    windowEndUtc: reportLike.windowEndUtc.toISOString(),
+    uptimeSeconds: reportLike.uptimeSeconds,
+    downtimeSeconds: reportLike.downtimeSeconds,
+    uptimePercent: reportLike.uptimePercent,
+    downtimePercent: reportLike.downtimePercent,
+    downtimeIntervalCount: reportLike.downtimeIntervalCount,
+    downtimeIntervals: (reportLike.downtimeIntervals || []).map((item) => ({
+      startedAt: item.startedAt.toISOString(),
+      endedAt: item.endedAt ? item.endedAt.toISOString() : null,
+      durationSeconds: item.durationSeconds,
+      status: item.status,
+    })),
+  };
+}
+
 async function generateServerReport(server, windowStart, windowEnd, reportWebhookUrl) {
   console.log(
     `[report] start server=${server.name} windowStart=${windowStart.toISOString()} windowEnd=${windowEnd.toISOString()}`
@@ -70,24 +91,18 @@ async function generateServerReport(server, windowStart, windowEnd, reportWebhoo
     `[report] summary server=${server.name} incidents=${incidents.length} downtimeIntervals=${downtimeIntervals.length} uptimeSeconds=${uptimeSeconds} downtimeSeconds=${downtimeSeconds} uptimePercent=${uptimePercent}`
   );
 
-  const payload = {
-    eventType: "uptime_report",
+  const payload = buildReportPayload({
     serverName: server.name,
     serverUrl: server.url,
-    windowStartUtc: windowStart.toISOString(),
-    windowEndUtc: windowEnd.toISOString(),
+    windowStartUtc: windowStart,
+    windowEndUtc: windowEnd,
     uptimeSeconds,
     downtimeSeconds,
     uptimePercent,
     downtimePercent,
     downtimeIntervalCount: downtimeIntervals.length,
-    downtimeIntervals: downtimeIntervals.map((item) => ({
-      startedAt: item.startedAt.toISOString(),
-      endedAt: item.endedAt ? item.endedAt.toISOString() : null,
-      durationSeconds: item.durationSeconds,
-      status: item.status,
-    })),
-  };
+    downtimeIntervals,
+  });
 
   const reportRun = await ReportRun.findOneAndUpdate(
     {
@@ -137,6 +152,63 @@ async function generateServerReport(server, windowStart, windowEnd, reportWebhoo
   return payload;
 }
 
+async function resendLatestReports({ servers, reportWebhookUrl }) {
+  const results = [];
+
+  for (const server of servers) {
+    const reportRun = await ReportRun.findOne({ serverName: server.name }).sort({ windowEndUtc: -1 });
+
+    if (!reportRun) {
+      results.push({
+        serverName: server.name,
+        resent: false,
+        reason: "No saved report found",
+      });
+      continue;
+    }
+
+    const payload = buildReportPayload(reportRun);
+
+    try {
+      console.log(
+        `[report] manual_resend server=${server.name} windowStart=${reportRun.windowStartUtc.toISOString()} windowEnd=${reportRun.windowEndUtc.toISOString()}`
+      );
+      const result = await postJson(reportWebhookUrl || reportRun.webhookUrl, payload);
+      const success = result.skipped || (result.status >= 200 && result.status < 300);
+
+      reportRun.webhookStatus = success ? "success" : "failed";
+      reportRun.webhookDeliveredAt = success ? new Date() : null;
+      reportRun.webhookError = result.skipped ? result.reason : null;
+      await reportRun.save();
+
+      results.push({
+        serverName: server.name,
+        resent: success,
+        status: result.status || null,
+        skipped: Boolean(result.skipped),
+        reason: result.skipped ? result.reason : null,
+        windowStartUtc: reportRun.windowStartUtc.toISOString(),
+        windowEndUtc: reportRun.windowEndUtc.toISOString(),
+      });
+    } catch (error) {
+      reportRun.webhookStatus = "failed";
+      reportRun.webhookDeliveredAt = null;
+      reportRun.webhookError = error.message;
+      await reportRun.save();
+
+      results.push({
+        serverName: server.name,
+        resent: false,
+        reason: error.message,
+        windowStartUtc: reportRun.windowStartUtc.toISOString(),
+        windowEndUtc: reportRun.windowEndUtc.toISOString(),
+      });
+    }
+  }
+
+  return results;
+}
+
 function startReportScheduler({ servers, reportHoursUtc, reportWebhookUrl, onError }) {
   let timer = null;
 
@@ -175,7 +247,9 @@ function startReportScheduler({ servers, reportHoursUtc, reportWebhookUrl, onErr
 }
 
 module.exports = {
+  buildReportPayload,
   generateServerReport,
+  resendLatestReports,
   startReportScheduler,
   getNextReportBoundary,
 };

@@ -4,7 +4,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const config = require("./config");
 const MonitorService = require("./services/monitorService");
-const { startReportScheduler, getNextReportBoundary } = require("./services/reportService");
+const { startReportScheduler, getNextReportBoundary, resendLatestReports } = require("./services/reportService");
 
 process.on("uncaughtException", (error) => {
   console.error("[fatal] uncaughtException:", error);
@@ -81,6 +81,46 @@ async function start() {
       success: true,
       data: monitorService.getStatusSnapshot(),
     });
+  });
+
+  app.get("/resend-latest-reports", async (req, res) => {
+    const providedKey = String(req.query.key || "");
+    const expectedKey = config.webhookAuthKey;
+
+    if (!expectedKey) {
+      return res.status(500).json({
+        success: false,
+        message: "WEBHOOK_KEY is not configured on the health check backend.",
+      });
+    }
+
+    if (providedKey !== expectedKey) {
+      return res.status(403).json({
+        success: false,
+        message: "Invalid key.",
+      });
+    }
+
+    try {
+      const results = await resendLatestReports({
+        servers: config.servers,
+        reportWebhookUrl: config.reportWebhookUrl,
+      });
+
+      return res.json({
+        success: true,
+        message: "Latest reports resend completed.",
+        reportWebhookUrl: config.reportWebhookUrl,
+        results,
+      });
+    } catch (error) {
+      console.error("[report] manual_resend_failed:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to resend latest reports.",
+        error: error.message,
+      });
+    }
   });
 
   const server = app.listen(config.port, () => {
