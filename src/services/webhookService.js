@@ -1,7 +1,7 @@
 const axios = require("axios");
 const config = require("../config");
 
-async function postJson(url, payload) {
+async function postJson(url, payload, extraHeaders = {}) {
   if (!url || url.includes("example.com")) {
     return { skipped: true, reason: "Webhook URL not configured." };
   }
@@ -13,6 +13,8 @@ async function postJson(url, payload) {
   if (config.webhookAuthKey) {
     headers["X-Webhook-Key"] = config.webhookAuthKey;
   }
+
+  Object.assign(headers, extraHeaders);
 
   const response = await axios.post(url, payload, {
     headers,

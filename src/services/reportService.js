@@ -27,7 +27,7 @@ function getNextReportBoundary(reportHoursUtc) {
 }
 
 function computeDowntimeIntervals(incidents, windowStart, windowEnd) {
-  const intervals = [];
+  const rawIntervals = [];
 
   for (const incident of incidents) {
     const actualStart = incident.startedAt > windowStart ? incident.startedAt : windowStart;
@@ -38,15 +38,49 @@ function computeDowntimeIntervals(incidents, windowStart, windowEnd) {
       continue;
     }
 
-    intervals.push({
+    rawIntervals.push({
       startedAt: actualStart,
       endedAt: incident.endedAt ? actualEnd : null,
-      durationSeconds: Math.round((actualEnd.getTime() - actualStart.getTime()) / 1000),
       status: incident.endedAt && incident.endedAt <= windowEnd ? "resolved" : "ongoing",
     });
   }
 
-  return intervals;
+  if (rawIntervals.length === 0) {
+    return [];
+  }
+
+  rawIntervals.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
+
+  const mergedIntervals = [rawIntervals[0]];
+
+  for (let index = 1; index < rawIntervals.length; index += 1) {
+    const current = rawIntervals[index];
+    const previous = mergedIntervals[mergedIntervals.length - 1];
+    const previousEnd = previous.endedAt || windowEnd;
+    const currentEnd = current.endedAt || windowEnd;
+
+    if (current.startedAt <= previousEnd) {
+      if (currentEnd > previousEnd) {
+        previous.endedAt = current.endedAt;
+      }
+      if (previous.status !== "ongoing" && current.status === "ongoing") {
+        previous.status = "ongoing";
+      }
+      continue;
+    }
+
+    mergedIntervals.push(current);
+  }
+
+  return mergedIntervals.map((interval) => {
+    const intervalEnd = interval.endedAt || windowEnd;
+    return {
+      startedAt: interval.startedAt,
+      endedAt: interval.endedAt,
+      durationSeconds: Math.round((intervalEnd.getTime() - interval.startedAt.getTime()) / 1000),
+      status: interval.status,
+    };
+  });
 }
 
 function buildReportPayload(reportLike) {
@@ -152,7 +186,7 @@ async function generateServerReport(server, windowStart, windowEnd, reportWebhoo
   return payload;
 }
 
-async function resendLatestReports({ servers, reportWebhookUrl }) {
+async function resendLatestReports({ servers, reportWebhookUrl, forceNotify = false }) {
   const results = [];
 
   for (const server of servers) {
@@ -173,7 +207,11 @@ async function resendLatestReports({ servers, reportWebhookUrl }) {
       console.log(
         `[report] manual_resend server=${server.name} windowStart=${reportRun.windowStartUtc.toISOString()} windowEnd=${reportRun.windowEndUtc.toISOString()}`
       );
-      const result = await postJson(reportWebhookUrl || reportRun.webhookUrl, payload);
+      const result = await postJson(
+        reportWebhookUrl || reportRun.webhookUrl,
+        payload,
+        forceNotify ? { "X-Webhook-Force-Notify": "true" } : {}
+      );
       const success = result.skipped || (result.status >= 200 && result.status < 300);
 
       reportRun.webhookStatus = success ? "success" : "failed";

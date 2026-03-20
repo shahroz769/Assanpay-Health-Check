@@ -105,21 +105,33 @@ async function start() {
       const results = await resendLatestReports({
         servers: config.servers,
         reportWebhookUrl: config.reportWebhookUrl,
+        forceNotify: true,
       });
 
-      return res.json({
-        success: true,
-        message: "Latest reports resend completed.",
-        reportWebhookUrl: config.reportWebhookUrl,
-        results,
-      });
+      const lines = [
+        "Latest reports resend completed.",
+        `Target: ${config.reportWebhookUrl}`,
+        "",
+      ];
+
+      for (const item of results) {
+        lines.push(`Server: ${item.serverName}`);
+        lines.push(`Resent: ${item.resent}`);
+        lines.push(`Status: ${item.status ?? "n/a"}`);
+        lines.push(`Window Start: ${item.windowStartUtc ?? "n/a"}`);
+        lines.push(`Window End: ${item.windowEndUtc ?? "n/a"}`);
+        if (item.reason) {
+          lines.push(`Reason: ${item.reason}`);
+        }
+        lines.push("");
+      }
+
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      return res.status(200).send(lines.join("\n"));
     } catch (error) {
       console.error("[report] manual_resend_failed:", error);
-      return res.status(500).json({
-        success: false,
-        message: "Failed to resend latest reports.",
-        error: error.message,
-      });
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      return res.status(500).send(`Failed to resend latest reports.\n${error.message}`);
     }
   });
 
